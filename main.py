@@ -44,33 +44,46 @@ async def on_ready():
 @bot.tree.command(name="spawn", description="Spawn 3 random cards to claim")
 async def spawn_cards(interaction: discord.Interaction):
     try:
+        # Defer the initial response to prevent timeout
+        await interaction.response.defer()
+
         # Generate card spawn
         card_data = await card_manager.spawn_cards()
-        
+
+        if not card_data:
+            # If no cards are available, edit the original "thinking..." message
+            await interaction.edit_original_response(content="⚠️ **All unique cards have been claimed!** There are no new cards to spawn right now.")
+            return
+
         # Generate image
         image_path = await image_generator.create_card_image(card_data)
-        
+
         # Create embed and view
         embed = discord.Embed(
             title="🎴 New Cards Spawned!",
             description="Click the buttons below to claim your cards!",
             color=0x00ff00
         )
+        embed.set_image(url="attachment://cards.png")
         
         view = CardClaimView(card_data, card_manager, interaction.guild_id)
-        
-        # Send with image
+
+        # Edit the original response with the final content
         with open(image_path, 'rb') as f:
             file = discord.File(f, filename="cards.png")
-            embed.set_image(url="attachment://cards.png")
-            await interaction.response.send_message(embed=embed, file=file, view=view)
-        
+            await interaction.edit_original_response(embed=embed, view=view, attachments=[file])
+
         # Clean up temporary image
         os.remove(image_path)
-        
+
     except Exception as e:
-        logger.error(f"Error spawning cards: {e}")
-        await interaction.response.send_message("An error occurred while spawning cards.", ephemeral=True)
+        logger.error(f"An unexpected error occurred during spawn: {e}", exc_info=True)
+        # Try to edit the response with an error message, but handle cases where it might fail
+        try:
+            await interaction.edit_original_response(content="An unexpected error occurred while spawning cards.")
+        except discord.errors.NotFound:
+            # If the interaction is gone, we can't do anything
+            pass
 
 @bot.tree.command(name="mycards", description="View your claimed cards")
 async def my_cards(interaction: discord.Interaction):
@@ -84,7 +97,7 @@ async def my_cards(interaction: discord.Interaction):
                 color=0xff0000
             )
         else:
-            cards_text = "\n".join([f"**{card['name']}** - Claimed: {card['claimed_at']}" 
+            cards_text = "\n".join([f"{card_manager.format_card_info(card)}" 
                                   for card in user_cards])
             embed = discord.Embed(
                 title=f"Your Cards ({len(user_cards)})",
@@ -141,9 +154,13 @@ async def upload_card(interaction: discord.Interaction, image: discord.Attachmen
         
         # Download and save the image
         await image.save(file_path)
+
+        # Add card to database
+        card_name = card_manager._extract_card_name(filename)
+        await db_manager.add_card(card_name, file_path)
         
         # Log the upload
-        logger.info(f"Card image uploaded: {filename} by {interaction.user.name}")
+        logger.info(f"Card image uploaded and added to DB: {filename} by {interaction.user.name}")
         
         # Send success message
         embed = discord.Embed(
@@ -298,50 +315,36 @@ class CardClaimButton(discord.ui.Button):
         self.guild_id = guild_id
 
     async def callback(self, interaction: discord.Interaction):
-        try:
-            # Check if card is already claimed
-            if await self.card_manager.is_card_claimed(self.card_data['id']):
-                await interaction.response.send_message(
-                    f"❌ **{self.card_data['name']}** has already been claimed!", 
-                    ephemeral=True
-                )
-                return
+        # Defer response to avoid interaction timeout
+        await interaction.response.defer()
+        
+        # Attempt to claim the card
+        result = await db_manager.claim_card(self.card_data['spawn_id'], interaction.user.id, interaction.user.name)
+        
+        if result == 'success':
+            # Disable the button
+            self.disabled = True
             
-            # Claim the card
-            success = await self.card_manager.claim_card(
-                self.card_data['id'], 
-                interaction.user.id, 
-                interaction.user.display_name
+            # Update the original message
+            await interaction.edit_original_response(view=self.view)
+            
+            # Send confirmation message
+            embed = discord.Embed(
+                title="🎉 Card Claimed!",
+                description=f"{interaction.user.mention} claimed **{self.card_data['name']}** ({self.card_data['rarity']})!",
+                color=0x00ff00
             )
-            
-            if success:
-                # Disable this button
-                self.disabled = True
-                self.style = discord.ButtonStyle.secondary
-                self.label = f"Claimed by {interaction.user.display_name}"
-                
-                # Update the view
-                await interaction.response.edit_message(view=self.view)
-                
-                # Send announcement
-                announcement_embed = discord.Embed(
-                    title="🎉 Card Claimed!",
-                    description=f"**{interaction.user.display_name}** claimed **{self.card_data['name']}**!",
-                    color=0xffd700
-                )
-                
-                await interaction.followup.send(embed=announcement_embed)
-                
-            else:
-                await interaction.response.send_message(
-                    "Failed to claim the card. Please try again.", 
-                    ephemeral=True
-                )
-                
-        except Exception as e:
-            logger.error(f"Error claiming card: {e}")
-            await interaction.response.send_message(
-                "An error occurred while claiming the card.", 
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Card {self.card_data['spawn_id']} claimed by {interaction.user.name} ({interaction.user.id})")
+        elif result == 'already_claimed':
+            # Send failure message
+            await interaction.followup.send(
+                f"❌ **{self.card_data['name']}** has already been claimed by someone else!", 
+                ephemeral=True
+            )
+        elif result == 'user_owns':
+            await interaction.followup.send(
+                f"❌ You already own a **{self.card_data['rarity']}** version of **{self.card_data['name']}**!",
                 ephemeral=True
             )
 

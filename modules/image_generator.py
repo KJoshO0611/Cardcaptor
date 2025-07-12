@@ -78,13 +78,7 @@ class ImageGenerator:
             await self._draw_card_image(ctx, image_path, x + self.border_width, 
                                       y + self.border_width, 
                                       self.card_width - (self.border_width * 2),
-                                      self.card_height - 60 - (self.border_width * 2))
-        
-        # Draw card name
-        self._draw_card_text(ctx, card.get('name', 'Unknown'), 
-                           x + self.card_width // 2, 
-                           y + self.card_height - 30,
-                           border_color)
+                                      self.card_height - (self.border_width * 2))
         
         # Draw rarity indicator
         self._draw_rarity_indicator(ctx, rarity, x + self.card_width - 30, y + 15)

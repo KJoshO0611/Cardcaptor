@@ -10,6 +10,13 @@ class CardManager:
     def __init__(self, db_manager: DatabaseManager):
         self.db_manager = db_manager
         self.art_folder = "art"
+        self.rarity_config = {
+            'common': {'weight': 70, 'color': (0.5, 0.5, 0.5), 'emote': '⚪'},
+            'uncommon': {'weight': 20, 'color': (0.2, 0.6, 0.8), 'emote': '🟢'},
+            'rare': {'weight': 7, 'color': (0.8, 0.7, 0.2), 'emote': '🔵'},
+            'epic': {'weight': 2.5, 'color': (0.6, 0.2, 0.8), 'emote': '🟣'},
+            'legendary': {'weight': 0.5, 'color': (1, 0.5, 0), 'emote': '🟠'}
+        }
     
     async def spawn_cards(self, count: int = 3) -> List[Dict[str, Any]]:
         """Spawn random cards for claiming"""
@@ -28,38 +35,33 @@ class CardManager:
             raise
     
     async def _get_random_art_cards(self, count: int = 3) -> List[Dict[str, Any]]:
-        """Get random cards from the art folder"""
-        if not os.path.exists(self.art_folder):
-            raise FileNotFoundError(f"Art folder '{self.art_folder}' does not exist")
-        
-        # Get all image files
-        image_files = [f for f in os.listdir(self.art_folder) 
-                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'))]
-        
-        if len(image_files) < count:
-            logger.warning(f"Not enough images in art folder. Found {len(image_files)}, requested {count}")
-            count = len(image_files)
-        
-        if not image_files:
-            raise ValueError("No image files found in art folder")
-        
-        # Randomly select images
-        selected_files = random.sample(image_files, count)
-        
-        cards = []
-        for i, file in enumerate(selected_files):
-            # Extract card name from filename
-            card_name = self._extract_card_name(file)
-            
-            cards.append({
-                'id': i + 1,  # Temporary ID for this spawn session
-                'name': card_name,
-                'image_path': os.path.join(self.art_folder, file),
-                'rarity': self._determine_rarity(),
-                'filename': file
-            })
-        
-        return cards
+        """Get random cards from the database that haven't been claimed yet"""
+        all_cards = await self.db_manager.get_all_cards()
+        if not all_cards:
+            raise ValueError("No cards found in the database.")
+
+        # Get all claimed card-rarity combinations
+        claimed_cards = await self.db_manager.get_all_claimed_cards()
+        claimed_set = set((c['card_id'], c['rarity']) for c in claimed_cards)
+
+        # Generate potential spawnable cards with rarities
+        potential_spawns = []
+        for card in all_cards:
+            for rarity in self.rarity_config.keys():
+                if (card['id'], rarity) not in claimed_set:
+                    potential_spawns.append({
+                        'id': card['id'],
+                        'name': card['name'],
+                        'image_path': card['image_path'],
+                        'rarity': rarity
+                    })
+
+        # If not enough potential spawns, return what we have (even if it's an empty list)
+        if len(potential_spawns) < count:
+            return potential_spawns
+
+        # Randomly select cards
+        return random.sample(potential_spawns, count)
     
     def _extract_card_name(self, filename: str) -> str:
         """Extract a readable card name from filename"""
@@ -75,10 +77,11 @@ class CardManager:
         return name
     
     def _determine_rarity(self) -> str:
-        """Determine card rarity with weighted randomness"""
-        rarities = ['common', 'uncommon', 'rare', 'epic', 'legendary']
-        weights = [50, 30, 15, 4, 1]  # Percentage weights
-        return random.choices(rarities, weights=weights)[0]
+        """Determine card rarity based on predefined weights"""
+        rarities = list(self.rarity_config.keys())
+        weights = [config['weight'] for config in self.rarity_config.values()]
+        
+        return random.choices(rarities, weights, k=1)[0]
     
     def get_rarity_color(self, rarity: str) -> int:
         """Get color code for rarity"""
